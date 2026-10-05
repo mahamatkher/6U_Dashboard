@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>6U ground station Dashboard</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <style>
+        /* ============================================================
+           TOKENS
+           ============================================================ */
+        :root {
+            --brand: #0ea5e9;          /* icons, bars, lines (non-text)            */
+            --brand-text: #0369a1;     /* sky-700: 5.9:1 on white, safe for text    */
+            --brand-soft: #e0f2fe;
+            --ink: #0f172a;
+            --ink-2: #475569;          /* secondary text: 7.5:1 on white            */
+            --line: #e2e8f0;
+            --tile: #f1f5f9;
+            --ok: #0ea5e9;
+            --warn: #d97706;
+            --bad: #dc2626;
+        }
+
+        /* ============================================================
+           BASE
+           ============================================================ */
+        * { box-sizing: border-box; }
+
+        body {
+            font-family: 'Inter', system-ui, sans-serif;
+            background: radial-gradient(circle at 50% 0%, #ffffff 0%, #e2e8f0 100%) fixed;
+            color: var(--ink);
+            margin: 0;
+            padding: 16px;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        @media (min-width: 1280px) { body { padding: 20px; gap: 20px; } }
+
+        /* Fixed one-screen "wall display" mode only when there is enough height.
+           On shorter laptop screens the page scrolls instead of clipping data. */
+        @media (min-width: 1280px) and (min-height: 820px) {
+            body { height: 100vh; overflow: hidden; }
+            .dash-grid { min-height: 0; }
+        }
+
+        .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+
+        :focus-visible { outline: 3px solid var(--brand-text); outline-offset: 2px; border-radius: 8px; }
+        .dark-card :focus-visible { outline-color: #7dd3fc; }
+
+        /* ============================================================
+           HEADER
+           ============================================================ */
+        .app-header {
+            background: #fff;
+            border-radius: 1.5rem;
+            padding: 12px 20px;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px 24px;
+            box-shadow: 0 5px 20px -5px rgba(0,0,0,.06);
+            flex-shrink: 0;
+        }
+        .brand { display: flex; align-items: center; gap: 16px 24px; flex-wrap: wrap; min-width: 0; }
+        .logos { display: flex; gap: 12px; align-items: center; }
+        .cu-logo { height: 48px; width: auto; }
+        @media (min-width: 640px) { .cu-logo { height: 56px; } }
+        .titles h1 { margin: 0; font-size: 1.35rem; font-weight: 700; letter-spacing: -.01em; line-height: 1.2; }
+        @media (min-width: 640px) { .titles h1 { font-size: 1.5rem; } }
+
+        .link-status { margin: 4px 0 0; display: flex; align-items: center; gap: 8px; font-size: .8125rem; font-weight: 600; color: var(--ink-2); }
+        .link-status .dot { width: 10px; height: 10px; border-radius: 9999px; background: #94a3b8; flex-shrink: 0; position: relative; }
+        .link-status.is-active .dot { background: var(--ok); }
+        .link-status.is-active .dot::after { content: ""; position: absolute; inset: 0; border-radius: inherit; background: var(--ok); animation: ping 1.6s cubic-bezier(0,0,.2,1) infinite; }
+        .link-status.is-lost { color: var(--bad); }
+        .link-status.is-lost .dot { background: var(--bad); }
+
+        .header-right { display: flex; align-items: center; gap: 16px 24px; margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
+        .kcc-logo { height: 48px; width: auto; }
+        @media (min-width: 640px) { .kcc-logo { height: 56px; } }
+        .clock { text-align: right; }
+        .clock-label { display: block; font-size: .75rem; font-weight: 700; letter-spacing: .08em; color: var(--ink-2); }
+        .clock time { font-size: 1.5rem; font-weight: 700; line-height: 1.2; }
+
+        /* ============================================================
+           GRID — 1 col (phone) → 2 col (tablet) → 12 col (desktop)
+           ============================================================ */
+        .dash-grid { display: grid; gap: 16px; grid-template-columns: minmax(0,1fr); flex: 1; }
+        @media (min-width: 768px) {
+            .dash-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
+            .dash-grid > .card { grid-column: span 2; }
+            .dash-grid > .c-optical, .dash-grid > .c-orient { grid-column: span 1; }
+        }
+        @media (min-width: 1280px) {
+            .dash-grid { gap: 20px; grid-template-columns: repeat(12, minmax(0,1fr)); grid-template-rows: minmax(300px,1fr) minmax(340px,1fr); }
+            .c-optical, .c-orient { grid-column: span 6 !important; }
+            .c-sensors { grid-column: span 4 !important; }
+            .c-power   { grid-column: span 2 !important; }
+            .c-map     { grid-column: span 6 !important; }
+        }
+
+        /* ============================================================
+           CARDS
+           ============================================================ */
+        .card {
+            background: #fff;
+            border-radius: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            min-width: 0;
+            box-shadow: 0 10px 40px -10px rgba(0,0,0,.08);
+            animation: fadeSlideUp .7s cubic-bezier(.16,1,.3,1) both;
+        }
+        .card:nth-child(1) { animation-delay: .05s; } .card:nth-child(2) { animation-delay: .1s; }
+        .card:nth-child(3) { animation-delay: .15s; } .card:nth-child(4) { animation-delay: .2s; }
+        .card:nth-child(5) { animation-delay: .25s; }
+        .dark-card { background: #1e1e1e; color: #fff; }
+
+        .card-header { padding: 16px 20px 8px; display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+        .card-title { margin: 0; font-size: 1.05rem; font-weight: 700; display: flex; align-items: center; gap: 10px; }
+        .accent { color: var(--brand); }
+        .header-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+        .chip { font-size: .75rem; font-weight: 700; padding: 4px 12px; border-radius: 9999px; background: var(--brand-soft); color: var(--brand-text); white-space: nowrap; }
+        .chip.is-warn { background: #fef3c7; color: #92400e; }
+
+        /* Fullscreen button (a real <button>: keyboard + screen-reader accessible) */
+        .fs-btn {
+            min-width: 44px; height: 44px; padding: 0 14px;
+            display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+            border-radius: 9999px; border: 1px solid var(--line); background: #fff; color: var(--ink);
+            font: 700 .75rem/1 'Inter', sans-serif; letter-spacing: .06em; text-transform: uppercase;
+            cursor: pointer; transition: background .2s, border-color .2s;
+        }
+        .fs-btn:hover { background: #f8fafc; border-color: #cbd5e1; }
+        .fs-btn i { color: var(--brand-text); font-size: .95rem; }
+        .dark-card .fs-btn { background: rgba(255,255,255,.08); border-color: rgba(255,255,255,.25); color: #fff; }
+        .dark-card .fs-btn:hover { background: rgba(255,255,255,.18); }
+        .dark-card .fs-btn i { color: #7dd3fc; }
+        .when-fs { display: none; align-items: center; gap: 8px; }
+        .is-fs .when-idle { display: none; }
+        .is-fs .when-fs { display: inline-flex; }
+
+        /* ============================================================
+           OPTICAL FEED
+           ============================================================ */
+        .rec-badge { background: #fff; color: #000; font-size: .75rem; font-weight: 700; letter-spacing: .06em; padding: 5px 12px; border-radius: 9999px; display: inline-flex; align-items: center; gap: 8px; }
+        .rec-badge .rec-dot { width: 8px; height: 8px; border-radius: 9999px; background: var(--bad); animation: pulse 2s ease-in-out infinite; }
+        .rec-badge.is-offline { background: #475569; color: #fff; }
+        .rec-badge.is-offline .rec-dot { background: #94a3b8; animation: none; }
+
+        .feed { position: relative; margin: 0 16px 16px; border-radius: 1rem; background: #000; overflow: hidden; flex: 1; min-height: 220px; box-shadow: inset 0 2px 12px rgba(0,0,0,.6); }
+        @media (max-width: 767px) { .feed { flex: none; aspect-ratio: 16 / 9; min-height: 0; } }
+        .feed-bg { position: absolute; inset: 0; opacity: .6; mix-blend-mode: screen; filter: grayscale(1); background: url('https://images.unsplash.com/photo-1446776811953-b23d57bd21aa?q=80&w=2072&auto=format&fit=crop') 0 0 / cover no-repeat; animation: slowPan 60s ease-in-out infinite; }
+        .feed-frame { position: absolute; inset: 14px; border: 2px solid rgba(255,255,255,.12); border-radius: .75rem; pointer-events: none; }
+        .reticle { position: absolute; top: 50%; left: 50%; width: 64px; height: 64px; transform: translate(-50%,-50%); border: 2px solid rgba(56,189,248,.6); border-radius: 9999px; }
+        .reticle::after { content: ""; position: absolute; top: 50%; left: 50%; width: 8px; height: 8px; margin: -4px; background: #38bdf8; border-radius: 9999px; }
+        .cam-label { position: absolute; bottom: 14px; left: 14px; font-size: .75rem; font-weight: 700; background: #fff; color: #000; padding: 6px 12px; border-radius: .5rem; box-shadow: 0 4px 12px rgba(0,0,0,.4); }
+
+        /* ============================================================
+           ORIENTATION (3D cube)
+           ============================================================ */
+        .orient-body { display: flex; flex-direction: column; gap: 14px; padding: 0 20px 20px; flex: 1; min-height: 0; }
+        @media (min-width: 1280px) { .orient-body { flex-direction: row; } }
+
+        .inner-box { background: var(--tile); border: 1px solid var(--line); border-radius: 1.25rem; }
+        .cube-stage { flex: 2; min-height: 250px; display: grid; place-items: center; overflow: hidden; }
+
+        .scene { --cube-scale: .85; width: 140px; height: 140px; perspective: 800px; transform: scale(var(--cube-scale)); }
+        @media (min-width: 640px) { .scene { --cube-scale: 1; } }
+        @media (min-width: 1280px) { .scene { --cube-scale: 1.1; } }
+        .camera { width: 100%; height: 100%; position: relative; transform-style: preserve-3d; transform: rotateX(-24deg) rotateY(-32deg); } /* fixed viewing angle so depth is visible */
+        .cube { width: 100%; height: 100%; position: relative; transform-style: preserve-3d; transform: translateZ(-70px); transition: transform .1s ease-out; }
+        .cube__face { position: absolute; width: 140px; height: 140px; border: 2px solid #0c4a6e; border-radius: 10px; display: grid; place-items: center; font: 700 .75rem 'JetBrains Mono', monospace; letter-spacing: .1em; color: #0c4a6e; }
+        .cube__face--front  { transform: rotateY(  0deg) translateZ(70px); background: #bae6fd; }
+        .cube__face--right  { transform: rotateY( 90deg) translateZ(70px); background: #7dd3fc; }
+        .cube__face--back   { transform: rotateY(180deg) translateZ(70px); background: #e2e8f0; }
+        .cube__face--left   { transform: rotateY(-90deg) translateZ(70px); background: #cbd5e1; }
+        .cube__face--top    { transform: rotateX( 90deg) translateZ(70px); background: #0ea5e9; }
+        .cube__face--bottom { transform: rotateX(-90deg) translateZ(70px); background: #64748b; }
+
+        .angles { flex: 1; display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 8px; margin: 0; }
+        @media (min-width: 1280px) { .angles { display: flex; flex-direction: column; gap: 10px; } }
+        .angle { background: #fff; border: 1px solid var(--line); border-radius: 1rem; padding: 10px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+        @media (min-width: 1280px) { .angle { flex: 1; flex-direction: row; justify-content: space-between; align-items: center; padding: 10px 16px; } }
+        .angle dt { font-size: .75rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-2); }
+        .angle dd { margin: 0; font-weight: 700; font-size: .95rem; color: var(--brand-text); white-space: nowrap; }
+        @media (min-width: 768px) { .angle dd { font-size: 1.15rem; } }
+        @media (min-width: 1280px) { .angle dd { font-size: 1.25rem; } }
+
+        /* ============================================================
+           SENSORS
+           ============================================================ */
+        .sensor-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); grid-auto-rows: minmax(112px, 1fr); gap: 10px; padding: 0 16px 16px; flex: 1; min-height: 0; }
+        @media (max-width: 479px) { .sensor-grid { grid-template-columns: minmax(0,1fr); } }
+        @media (min-width: 1024px) and (max-width: 1279px) { .sensor-grid { grid-template-columns: repeat(4, minmax(0,1fr)); } }
+
+        .tile { background: var(--tile); border: 1px solid var(--line); border-radius: 1.1rem; padding: 10px 14px; display: flex; flex-direction: column; gap: 2px; min-width: 0; min-height: 0; }
+        .tile-head { display: flex; align-items: center; gap: 8px; }
+        .tile-icon { width: 26px; height: 26px; border-radius: 9999px; background: var(--brand-soft); color: var(--brand-text); display: grid; place-items: center; font-size: .75rem; flex-shrink: 0; }
+        .metric-label { font-size: .75rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-2); }
+        .metric-val { font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 1.6rem; line-height: 1.15; color: var(--ink); }
+        .unit { font-size: .75rem; font-weight: 700; color: var(--ink-2); margin-left: 4px; }
+        .spark { position: relative; flex: 1; min-height: 34px; }
+        .spark canvas { position: absolute; inset: 0; width: 100% !important; height: 100% !important; }
+
+        .temp-rows { display: flex; flex-direction: column; justify-content: center; gap: 6px; flex: 1; }
+        .temp-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+        .temp-row .metric-label { text-transform: none; letter-spacing: 0; font-size: .8125rem; white-space: nowrap; }
+        .temp-row .metric-val { font-size: 1.2rem; }
+        .temp-row .unit { margin-left: 2px; }
+        .swatch { display: inline-block; width: 8px; height: 8px; border-radius: 9999px; margin-right: 6px; }
+
+        /* ============================================================
+           POWER
+           ============================================================ */
+        .power-body { display: grid; grid-template-columns: minmax(0,1fr); gap: 10px; padding: 0 16px 16px; flex: 1; min-height: 0; }
+        @media (min-width: 640px) and (max-width: 1279px) { .power-body { grid-template-columns: repeat(2, minmax(0,1fr)); } }
+        .power-tile { padding: 10px 14px; display: flex; flex-direction: column; gap: 6px; min-height: 124px; min-width: 0; }
+        .power-head { display: flex; flex-direction: column; align-items: flex-start; gap: 0; }
+        .power-head .metric-label { white-space: nowrap; }
+        .power-head .val { font-size: 1.05rem; font-weight: 700; color: var(--brand-text); }
+        .power-head .val.muted { color: var(--ink-2); }
+
+        .solar-bars { flex: 1; min-height: 52px; display: flex; align-items: flex-end; gap: 5px; }
+        .solar-bar { flex: 1; min-width: 0; height: 4%; min-height: 4px; border-radius: 9999px; background: #cbd5e1; transition: height .3s, background-color .3s; }
+        .caption { margin: 0; font-size: .75rem; color: var(--ink-2); }
+
+        .batt-value { font-size: 1.9rem; font-weight: 700; text-align: center; line-height: 1; margin-top: auto; }
+        .batt-state { text-align: center; font-size: .75rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-2); }
+        .batt-track { width: 100%; height: 12px; background: #cbd5e1; border-radius: 9999px; overflow: hidden; }
+        .batt-fill { height: 100%; width: 0; background: var(--ok); transition: width .5s, background-color .5s; }
+        .batt-fill.is-warn { background: var(--warn); } .batt-fill.is-bad { background: var(--bad); }
+
+        /* ============================================================
+           MAP
+           ============================================================ */
+        .c-map { min-height: 400px; }
+        .coords { display: flex; flex-wrap: wrap; gap: 6px; }
+        .coord-chip { font-size: .75rem; font-weight: 700; color: var(--brand-text); background: var(--brand-soft); padding: 5px 10px; border-radius: .5rem; white-space: nowrap; }
+        .map-wrap { position: relative; flex: 1; min-height: 280px; margin: 0 12px 12px; border-radius: 1rem; overflow: hidden; border: 1px solid var(--line); }
+        #map { position: absolute; inset: 0; background: #e2e8f0; }
+        .map-tiles { filter: grayscale(80%) contrast(1.1) brightness(1.1); }
+        .leaflet-control-attribution { font-size: 11px !important; }
+        #recenter-btn { position: absolute; top: 12px; right: 12px; z-index: 1000; min-height: 40px; padding: 0 14px; border-radius: 9999px; border: 1px solid var(--line); background: #fff; color: var(--ink); font: 700 .75rem 'Inter', sans-serif; display: inline-flex; align-items: center; gap: 8px; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,.15); }
+        #recenter-btn i { color: var(--brand-text); }
+        #recenter-btn[hidden] { display: none; }
+        .craft-icon { position: relative; display: grid; place-items: center; }
+        .craft-dot { width: 16px; height: 16px; background: #0f172a; border: 3px solid #fff; border-radius: 9999px; box-shadow: 0 2px 8px rgba(0,0,0,.4); position: relative; z-index: 1; }
+        .craft-ping { position: absolute; width: 48px; height: 48px; border: 2px solid rgba(14,165,233,.5); border-radius: 9999px; animation: ping 1.8s cubic-bezier(0,0,.2,1) infinite; }
+
+        /* Dim readings while the link is down so stale numbers aren't mistaken for live data */
+        body.link-lost .metric-val, body.link-lost .angle dd, body.link-lost .batt-value, body.link-lost .solar-bars { opacity: .45; }
+
+        /* ============================================================
+           FULLSCREEN (native API, or .fs-fallback on browsers without it, e.g. iPhone)
+           ============================================================ */
+        .fs-fallback { position: fixed !important; inset: 0; z-index: 9999; width: 100vw; height: 100dvh; }
+        .is-fs { overflow-y: auto; border-radius: 0 !important; animation: none; height: 100%; }
+        .is-fs .card-header { padding: 20px 28px 10px; }
+        .is-fs .card-title { font-size: clamp(1.25rem, 2.2vw, 2.25rem); }
+        .is-fs .feed { margin: 0 28px 28px; min-height: 0; aspect-ratio: auto; flex: 1; }
+        .is-fs .orient-body { padding: 0 28px 28px; flex-direction: row; }
+        .is-fs .scene { --cube-scale: min(3.4, 0.5vw + 1.6); }
+        .is-fs .angle dt { font-size: clamp(.9rem, 1.6vw, 1.75rem); }
+        .is-fs .angle dd { font-size: clamp(1.5rem, 4vw, 4.5rem); }
+        .is-fs .angle { padding: 1rem 2rem; }
+        .is-fs .angles { display: flex; flex-direction: column; }
+        .is-fs .sensor-grid { padding: 0 28px 28px; gap: 18px; grid-template-columns: repeat(2, minmax(0,1fr)); }
+        .is-fs .tile { padding: 1.25rem 1.75rem; }
+        .is-fs .tile-icon { width: clamp(32px, 3vw, 56px); height: clamp(32px, 3vw, 56px); font-size: clamp(.9rem, 1.5vw, 1.75rem); }
+        .is-fs .metric-label { font-size: clamp(.9rem, 1.5vw, 1.6rem); }
+        .is-fs .metric-val { font-size: clamp(2.25rem, 5vw, 6rem); }
+        .is-fs .temp-row .metric-val { font-size: clamp(1.75rem, 3.6vw, 4.25rem); }
+        .is-fs .unit { font-size: clamp(.9rem, 1.4vw, 1.6rem); }
+        .is-fs .spark { min-height: 12vh; }
+        .is-fs .power-body { padding: 0 28px 28px; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 18px; }
+        .is-fs .power-tile { padding: 1.5rem 2rem; gap: 12px; }
+        .is-fs .power-head .val { font-size: clamp(2rem, 4vw, 5rem); }
+        .is-fs .solar-bars { min-height: 20vh; gap: 8px; }
+        .is-fs .batt-value { font-size: clamp(4rem, 8vw, 10rem); }
+        .is-fs .batt-state { font-size: clamp(1rem, 2vw, 2.5rem); margin-bottom: 8px; }
+        .is-fs .batt-track { height: 24px; }
+        .is-fs .map-wrap { margin: 0 28px 28px; }
+        .is-fs .coord-chip { font-size: clamp(1rem, 1.5vw, 1.75rem); padding: 8px 16px; border-radius: 1rem; }
+
+
+        /* ============================================================
+           MOTION
+           ============================================================ */
+        @keyframes fadeSlideUp { from { opacity: 0; transform: translateY(24px); } to { opacity: 1; transform: none; } }
+        @keyframes ping  { 75%, 100% { transform: scale(2); opacity: 0; } }
+        @keyframes pulse { 50% { opacity: .35; } }
+        @keyframes slowPan { 0%,100% { background-position: 0 0; background-size: 100%; } 50% { background-position: 100% 100%; background-size: 120%; } }
+
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after { animation: none !important; transition: none !important; }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Header -->
+    <header class="app-header">
+        <div class="brand">
+            <div class="logos">
+                <img src="assets/chandigarh university logo.png" alt="Chandigarh University" class="cu-logo" width="196" height="87">
+            </div>
+            <div class="titles">
+                <h1>6U ground station Dashboard</h1>
+                <p id="link-status" class="link-status" role="status">
+                    <span class="dot" aria-hidden="true"></span>
+                    <span id="link-text">Waiting for telemetry…</span>
+                </p>
+            </div>
+        </div>
+        <div class="header-right">
+            <div class="clock">
+                <span class="clock-label">UTC</span>
+                <time id="utc-time" class="mono">--:--:--</time>
+            </div>
+            <img src="assets/kcc logo.png" alt="Kalpana Chawla Centre for Research in Space Science and Technology" class="kcc-logo" width="261" height="87">
+        </div>
+    </header>
+
+    <main class="dash-grid">
+
+        <!-- OPTICAL FEED -->
+        <section class="card dark-card c-optical" aria-labelledby="t-optical" data-fs-card>
+            <div class="card-header">
+                <h2 class="card-title" id="t-optical"><i class="fa-solid fa-video accent" aria-hidden="true"></i>Optical Feed</h2>
+                <div class="header-actions">
+                    <span id="rec-badge" class="rec-badge"><span class="rec-dot" aria-hidden="true"></span>REC</span>
+                    <button type="button" class="fs-btn" data-fs-btn data-label="Optical Feed">
+                        <span class="when-idle"><i class="fa-solid fa-expand" aria-hidden="true"></i></span>
+                        <span class="when-fs"><i class="fa-solid fa-arrow-left" aria-hidden="true"></i>Back to Dashboard</span>
+                    </button>
+                </div>
+            </div>
+            <div class="feed">
+                <div class="feed-bg" aria-hidden="true"></div>
+                <div class="feed-frame" aria-hidden="true"><div class="reticle"></div></div>
+                <div class="cam-label mono" id="cam-label">CAM_1 | ACTIVE</div>
+            </div>
+        </section>
+
+        <!-- ORIENTATION -->
+        <section class="card c-orient" aria-labelledby="t-orient" data-fs-card>
+            <div class="card-header">
+                <h2 class="card-title" id="t-orient"><i class="fa-solid fa-cube accent" aria-hidden="true"></i>Orientation</h2>
+                <div class="header-actions">
+                    <span id="orient-badge" class="chip">Awaiting data</span>
+                    <button type="button" class="fs-btn" data-fs-btn data-label="Orientation">
+                        <span class="when-idle"><i class="fa-solid fa-expand" aria-hidden="true"></i></span>
+                        <span class="when-fs"><i class="fa-solid fa-arrow-left" aria-hidden="true"></i>Back to Dashboard</span>
+                    </button>
+                </div>
+            </div>
+            <div class="orient-body">
+                <div class="inner-box cube-stage">
+                    <div class="scene" aria-hidden="true">
+                        <div class="camera">
+                            <div class="cube" id="satellite-cube">
+                                <div class="cube__face cube__face--front">FRONT</div>
+                                <div class="cube__face cube__face--back"></div>
+                                <div class="cube__face cube__face--right"></div>
+                                <div class="cube__face cube__face--left"></div>
+                                <div class="cube__face cube__face--top"></div>
+                                <div class="cube__face cube__face--bottom"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <dl class="angles">
+                    <div class="angle"><dt>Pitch</dt><dd class="mono" id="val-pitch">--</dd></div>
+                    <div class="angle"><dt>Yaw</dt><dd class="mono" id="val-yaw">--</dd></div>
+                    <div class="angle"><dt>Roll</dt><dd class="mono" id="val-roll">--</dd></div>
+                </dl>
+            </div>
+        </section>
+
+        <!-- SENSORS -->
+        <section class="card c-sensors" aria-labelledby="t-sensors" data-fs-card>
+            <div class="card-header">
+                <h2 class="card-title" id="t-sensors"><i class="fa-solid fa-microchip accent" aria-hidden="true"></i>Sensors</h2>
+                <div class="header-actions">
+                    <button type="button" class="fs-btn" data-fs-btn data-label="Sensors">
+                        <span class="when-idle"><i class="fa-solid fa-expand" aria-hidden="true"></i></span>
+                        <span class="when-fs"><i class="fa-solid fa-arrow-left" aria-hidden="true"></i>Back to Dashboard</span>
+                    </button>
+                </div>
+            </div>
+            <div class="sensor-grid">
+
+                <div class="tile">
+                    <div class="tile-head"><span class="tile-icon"><i class="fa-solid fa-temperature-half" aria-hidden="true"></i></span><span class="metric-label">Temperature</span></div>
+                    <div class="temp-rows">
+                        <div class="temp-row">
+                            <span class="metric-label"><span class="swatch" style="background:#0ea5e9" aria-hidden="true"></span>Internal</span>
+                            <span><span class="metric-val" id="val-temp-int">--</span><span class="unit">°C</span></span>
+                        </div>
+                        <div class="temp-row">
+                            <span class="metric-label"><span class="swatch" style="background:#14b8a6" aria-hidden="true"></span>External</span>
+                            <span><span class="metric-val" id="val-temp-ext">--</span><span class="unit">°C</span></span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="tile">
+                    <div class="tile-head"><span class="tile-icon"><i class="fa-solid fa-gauge-high" aria-hidden="true"></i></span><span class="metric-label">Pressure</span></div>
+                    <div><span class="metric-val" id="val-pres">--</span><span class="unit">kPa</span></div>
+                    <div class="spark"><canvas id="chart-pres" aria-label="Pressure trend, last 30 readings" role="img"></canvas></div>
+                </div>
+
+                <div class="tile">
+                    <div class="tile-head"><span class="tile-icon"><i class="fa-solid fa-droplet" aria-hidden="true"></i></span><span class="metric-label">Outer Humidity</span></div>
+                    <div><span class="metric-val" id="val-hum">--</span><span class="unit">%</span></div>
+                    <div class="spark"><canvas id="chart-hum" aria-label="Humidity trend, last 30 readings" role="img"></canvas></div>
+                </div>
+
+                <div class="tile">
+                    <div class="tile-head"><span class="tile-icon"><i class="fa-solid fa-sun" aria-hidden="true"></i></span><span class="metric-label">Ambient Light</span></div>
+                    <div><span class="metric-val" id="val-light">--</span><span class="unit">lux</span></div>
+                    <div class="spark"><canvas id="chart-light" aria-label="Ambient light trend, last 30 readings" role="img"></canvas></div>
+                </div>
+
+            </div>
+        </section>
+
+        <!-- POWER -->
+        <section class="card c-power" aria-labelledby="t-power" data-fs-card>
+            <div class="card-header">
+                <h2 class="card-title" id="t-power"><i class="fa-solid fa-bolt accent" aria-hidden="true"></i>Power</h2>
+                <div class="header-actions">
+                    <button type="button" class="fs-btn" data-fs-btn data-label="Power">
+                        <span class="when-idle"><i class="fa-solid fa-expand" aria-hidden="true"></i></span>
+                        <span class="when-fs"><i class="fa-solid fa-arrow-left" aria-hidden="true"></i>Back to Dashboard</span>
+                    </button>
+                </div>
+            </div>
+            <div class="power-body">
+                <div class="inner-box power-tile">
+                    <div class="power-head">
+                        <span class="metric-label">Solar Array</span>
+                        <span class="mono val" id="val-solar-kw">-- kW</span>
+                    </div>
+                    <div id="solar-bars" class="solar-bars" role="img" aria-label="Output of the 12 solar panels"></div>
+                    <p class="caption">12 panels · output %</p>
+                </div>
+                <div class="inner-box power-tile">
+                    <div class="power-head">
+                        <span class="metric-label">Battery</span>
+                        <span class="mono val muted" id="val-batt-v">-- V</span>
+                    </div>
+                    <div class="mono batt-value" id="val-batt">--</div>
+                    <div class="batt-state" id="batt-state">&nbsp;</div>
+                    <div class="batt-track" role="progressbar" aria-label="Battery charge" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="batt-track">
+                        <div id="batt-bar" class="batt-fill"></div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- TRACKING -->
+        <section class="card c-map" aria-labelledby="t-map" data-fs-card>
+            <div class="card-header">
+                <h2 class="card-title" id="t-map"><i class="fa-solid fa-map-location-dot accent" aria-hidden="true"></i>Tracking</h2>
+                <div class="header-actions">
+                    <div class="coords mono" id="coord-display" aria-live="off">
+                        <span class="coord-chip">Awaiting GPS…</span>
+                    </div>
+                    <button type="button" class="fs-btn" data-fs-btn data-label="Tracking">
+                        <span class="when-idle"><i class="fa-solid fa-expand" aria-hidden="true"></i></span>
+                        <span class="when-fs"><i class="fa-solid fa-arrow-left" aria-hidden="true"></i>Back to Dashboard</span>
+                    </button>
+                </div>
+            </div>
+            <div class="map-wrap">
+                <div id="map" role="application" aria-label="Map showing the craft's ground track"></div>
+                <button type="button" id="recenter-btn" hidden><i class="fa-solid fa-location-crosshairs" aria-hidden="true"></i>Follow craft</button>
+            </div>
+        </section>
+
+    </main>
+
+    <script src="app.js?v=19"></script>
+</body>
+</html>
